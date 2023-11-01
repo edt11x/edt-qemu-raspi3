@@ -1,0 +1,97 @@
+#!/bin/bash
+export WGET_FILE=https://downloads.raspberrypi.com/raspios_oldstable_lite_arm64/images/raspios_oldstable_lite_arm64-2023-10-10/2023-05-03-raspios-bullseye-arm64-lite.img.xz
+export OS_FILE=2023-05-03-raspios-bullseye-arm64-lite.img
+echo "Try to build a QEMU Raspberry Pi 3"
+echo "This script was created from the instructions in:"
+echo "https://interrupt.memfault.com/blog/emulating-raspberry-pi-in-qemu"
+if [ ! -f "${OS_FILE}" ]
+then
+	if [ ! -f "${OS_FILE}.xz" ]
+	then
+		echo "We have to get the Raspberry Pi 3 image"
+		wget "${WGET_FILE}"
+		if [ $? -eq 0 ]
+		then
+			echo "Successfully downloaded Raspberry Pi 3 image"
+			echo "Attempting to decompress the image"
+			xz -d "${OS_FILE}.xz"
+			if [ $? -eq 0 ]
+			then
+				echo "Successfully decompressed the Raspberry Pi 3 image"
+			else
+				echo "FAILED to decompress the Raspberry Pi 3 image"
+				exit 1
+			fi
+		else
+			echo "FAILED to fetch the Raspberry Pi 3 image"
+			exit 1
+		fi
+	fi
+fi
+echo "Checking the partition tables on the Raspberry Pi 3 image"
+OFFSET=$( /usr/sbin/fdisk -l "${OS_FILE}" | grep img1 | awk '{ print $2 }' )
+if [ $? -eq 0 ]
+then
+	echo "Image partition tables are intact"
+else
+	echo "FAILED, Partition tables are not valid"
+	exit 1
+fi
+BYTE_OFFSET=$(( OFFSET * 512 ))
+sudo mkdir -p /mnt/image
+sudo mount -o loop,offset=$BYTE_OFFSET ./"${OS_FILE}" /mnt/image
+if [ $? -eq 0 ]
+then
+	echo "Successfully mounted Raspberry Pi 3 Boot Partition"
+	/bin/ls -ls /mnt/image
+else
+	echo "FAILED to mount the Raspberry Pi 3 Boot Partition"
+	exit 1
+fi
+echo "We will need the Device Tree and the kernel image from the Boot Partition"
+/bin/rm -f bcm2710-rpi-3-b-plus.dtb .
+cp /mnt/image/bcm2710-rpi-3-b-plus.dtb .
+if [ $? -eq 0 ]
+then
+	echo "Copied the Device Tree"
+else
+	echo "FAILED to copy the Device Tree"
+	exit 1
+fi
+/bin/rm -f kernel8.img
+cp /mnt/image/kernel8.img .
+if [ $? -eq 0 ]
+then
+	echo "Copied the kernel"
+else
+	echo "FAILED to copy the kernel"
+	exit 1
+fi
+# Generating the password for the Raspberry Pi 3, user pi, password raspberry
+# $ openssl passwd -6
+# Password:
+# Verifying - Password:
+# $6$rBoByrWRKMY1EHFy$ho.LISnfm83CLBWBE/yqJ6Lq1TinRlxw/ImMTPcvvMuUfhQYcMmFnpFXUPowjy2br1NA0IACwF9JKugSNuHoe0
+echo 'pi:$6$rBoByrWRKMY1EHFy$ho.LISnfm83CLBWBE/yqJ6Lq1TinRlxw/ImMTPcvvMuUfhQYcMmFnpFXUPowjy2br1NA0IACwF9JKugSNuHoe0' | sudo tee /mnt/image/userconf
+if [ $? -eq 0 ]
+then
+	echo "Successfully created the username pi and the password raspberry"
+else
+	echo "FAILED to create the user and password"
+	exit 1
+fi
+echo "Enabling SSH"
+sudo touch /mnt/image/ssh
+sudo umount /mnt/image
+echo "Try to resize the image to a reasonable size for the Operating System, OS"
+qemu-img resize "${OS_FILE}" 8G
+if [ $? -eq 0 ]
+then
+	echo "Successfully resized the Raspberry Pi image"
+else
+	echo "FAILED to resize the Raspberry Pi image"
+	exit 1
+fi
+echo "Starting Raspberry Pi 3 under QEMU"
+qemu-system-aarch64 -machine raspi3b -cpu cortex-a72 -nographic -dtb bcm2710-rpi-3-b-plus.dtb -m 1G -smp 4 -kernel kernel8.img -sd "${OS_FILE}" -append "rw earlyprintk loglevel=8 console=ttyAMA0,115200 dwc_otg.lpm_enable=0 root=/dev/mmcblk0p2 rootdelay=1" -device usb-net,netdev=net0 -netdev user,id=net0,hostfwd=tcp::2222-:22
+exit 0
